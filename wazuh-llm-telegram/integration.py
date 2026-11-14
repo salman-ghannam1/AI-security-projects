@@ -177,6 +177,12 @@ def rate(db, name, interval):
         db.execute("INSERT OR REPLACE INTO rates VALUES(?,?)", (name, time.time()))
 
 
+def defer_rate(db, name, delay):
+    if delay > 0:
+        with db:
+            db.execute("INSERT INTO rates VALUES(?,?) ON CONFLICT(name) DO UPDATE SET last=max(last,excluded.last)", (name, time.time() + delay))
+
+
 def analyse(db, cfg, alert):
     rate(db, "ai", cfg["ai_interval"])
     schema = {"type": "object", "additionalProperties": False, "required": sorted(FIELDS), "properties": {
@@ -242,6 +248,7 @@ def process(db, cfg, row):
             analysis = analyse(db, cfg, alert)
         except Exception as exc:
             attempts = row["ai_attempts"] + 1
+            defer_rate(db, "ai", getattr(exc, "retry_after", 0))
             with db:
                 db.execute("UPDATE queue SET ai_attempts=?,due=? WHERE key=?", (attempts, time.time() + max(backoff(attempts), getattr(exc, "retry_after", 0)), row["key"]))
             LOG.warning("AI analysis failed; attempt %d", attempts)
@@ -267,6 +274,7 @@ def process(db, cfg, row):
     except Exception as exc:
         attempts = db.execute("SELECT attempts FROM queue WHERE key=?", (row["key"],)).fetchone()[0] + 1
         retry = getattr(exc, "retry_after", 0)
+        defer_rate(db, "telegram", retry)
         with db:
             db.execute("UPDATE queue SET attempts=?,due=?,status=? WHERE key=?", (attempts, time.time() + max(backoff(attempts), retry), "dead" if attempts >= cfg["delivery_attempts"] else "pending", row["key"]))
         LOG.warning("Telegram delivery failed; attempt %d; retained in queue", attempts)
@@ -309,12 +317,21 @@ def main():
         return selftest_filter()
     cfg = config()
     os.umask(0o077)
+    if args.mode == "enqueue":
+        # Read the Wazuh-owned input first, then ensure queue/WAL files are always
+        # owned by wazuh even when integratord invokes the producer as root.
+        with open(args.alert_file, "rb") as stream:
+            raw = stream.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("Alert too large")
+        if os.geteuid() == 0:
+            import pwd
+            account = pwd.getpwnam("wazuh")
+            os.setgroups([account.pw_gid])
+            os.setgid(account.pw_gid)
+            os.setuid(account.pw_uid)
     with contextlib.closing(connect(cfg)) as db:
         if args.mode == "enqueue":
-            with open(args.alert_file, "rb") as stream:
-                raw = stream.read(1024 * 1024 + 1)
-            if len(raw) > 1024 * 1024:
-                raise ValueError("Alert too large")
             enqueue(db, cfg, json.loads(raw))
         elif args.mode == "worker":
             worker(db, cfg)

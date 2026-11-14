@@ -82,7 +82,8 @@ def activate():
         OSSEC.write_text(original)
         raise RuntimeError('Validation failed; original configuration restored') from None
     try:
-        run('/bin/systemctl', 'enable', '--now', UNIT)
+        run('/bin/systemctl', 'enable', UNIT)
+        run('/bin/systemctl', 'restart', UNIT)
         run('/bin/systemctl', 'restart', 'wazuh-manager')
         run('/bin/systemctl', 'is-active', UNIT, 'wazuh-manager')
     except Exception:
