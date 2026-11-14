@@ -39,7 +39,7 @@ def stage():
         directory.mkdir(parents=True, exist_ok=True)
         os.chown(directory, uid if directory == STATE else 0, gid)
         os.chmod(directory, 0o750)
-    for filename in ('integration.py', 'setup_secrets.py'):
+    for filename in ('integration.py', 'setup_secrets.py', 'diagnose-telegram.py'):
         copy_file(SOURCE / filename, DEST / filename, 0o750, gid)
     if not (ETC / 'config.json').exists():
         copy_file(SOURCE / 'config.json', ETC / 'config.json', 0o640, gid)

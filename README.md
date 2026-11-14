@@ -81,6 +81,20 @@ only the selected job's status/attempts/due. Do not reset `next_part` unless you
 intend to repeat previously delivered parts. Back up the SQLite database with
 SQLite's backup API rather than copying a live WAL database's main file alone.
 
+For a read-only token/chat check without printing secrets, run the diagnostic
+script in a transient service with the same user and environment file:
+
+```sh
+systemd-run --quiet --wait --pipe -p User=wazuh -p Group=wazuh \
+  -p EnvironmentFile=/etc/wazuh-llm-telegram/secrets.env \
+  /usr/bin/python3 /opt/wazuh-llm-telegram/diagnose-telegram.py
+```
+
+It prints only allowlisted API statuses and the public bot username. `getMe: OK`
+with `getChat: HTTP 400 - chat not found` usually requires opening that bot from
+the destination account and pressing Start, or correcting the configured chat ID.
+It does not send any messages or consume updates belonging to another bot client.
+
 To disable: stop/disable only `wazuh-llm-telegram`, restore the appropriate
 `ossec.conf.llm-backup-*` file, validate with `wazuh-analysisd -t` and
 `wazuh-integratord -t`, then restart the manager. Keep the queue and secrets for
