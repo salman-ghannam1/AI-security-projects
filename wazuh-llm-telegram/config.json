@@ -1,0 +1,12 @@
+{
+  "model": "openai/gpt-4o-mini",
+  "chat_id": "6415347828",
+  "database": "/var/lib/wazuh-llm-telegram/queue.sqlite3",
+  "telegram_interval": 1.2,
+  "ai_interval": 2.0,
+  "http_timeout": 30,
+  "ai_attempts": 3,
+  "delivery_attempts": 12,
+  "queue_limit": 20000,
+  "retention_days": 30
+}

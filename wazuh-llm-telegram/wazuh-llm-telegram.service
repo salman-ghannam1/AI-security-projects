@@ -1,0 +1,30 @@
+[Unit]
+Description=Wazuh LLM Telegram queue worker
+Wants=network-online.target
+After=network-online.target wazuh-manager.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=wazuh
+Group=wazuh
+EnvironmentFile=/etc/wazuh-llm-telegram/secrets.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/wazuh-llm-telegram/integration.py worker
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wazuh-llm-telegram
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+CapabilityBoundingSet=
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

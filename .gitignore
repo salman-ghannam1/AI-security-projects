@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.env
+*.sqlite*
+secrets*
+!setup_secrets.py
+*.log

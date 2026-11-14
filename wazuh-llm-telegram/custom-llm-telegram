@@ -1,0 +1,3 @@
+#!/bin/sh
+# Wazuh invocation only enqueues; no network calls and no secrets loaded.
+exec /usr/bin/python3 /opt/wazuh-llm-telegram/integration.py enqueue "$1"
