@@ -15,6 +15,7 @@ import urllib.error
 import urllib.request
 
 CONFIG = Path("/etc/wazuh-llm-telegram/config.json")
+OR_URL = "https://openrouter.ai/api/v1/chat/completions"
 LOG = logging.getLogger("wazuh-llm-telegram")
 SENSITIVE = re.compile(r"password|passwd|passphrase|secret|token|api.?key|private.?key|authorization|cookie|credential", re.I)
 EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
@@ -80,6 +81,12 @@ def connect(cfg):
         next_part INTEGER NOT NULL DEFAULT 0, completed REAL);
       CREATE INDEX IF NOT EXISTS queue_due ON queue(status,due);
       CREATE TABLE IF NOT EXISTS rates (name TEXT PRIMARY KEY, last REAL NOT NULL);
+      CREATE TABLE IF NOT EXISTS ai_calls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL,
+        requested REAL NOT NULL, outcome TEXT NOT NULL, completed REAL);
+      CREATE TABLE IF NOT EXISTS receipts (
+        key TEXT NOT NULL, part INTEGER NOT NULL, message_id INTEGER NOT NULL,
+        chat_id TEXT NOT NULL, delivered REAL NOT NULL, PRIMARY KEY(key,part));
     """)
     return db
 
@@ -189,7 +196,7 @@ def analyse(db, cfg, alert):
         **{k: {"type": "string"} for k in ("summary", "likely_cause", "impact")},
         **{k: {"type": "array", "items": {"type": "string"}} for k in ("evidence", "recommended_actions")},
         "confidence": {"type": "string", "enum": ["low", "medium", "high"]}}}
-    result = post("https://openrouter.ai/api/v1/chat/completions", {
+    result = post(OR_URL, {
         "model": cfg["model"], "temperature": 0, "max_tokens": 1800,
         "provider": {"require_parameters": True, "data_collection": "deny"},
         "response_format": {"type": "json_schema", "json_schema": {"name": "triage", "strict": True, "schema": schema}},
@@ -244,17 +251,23 @@ def process(db, cfg, row):
         return
     analysis = json.loads(row["analysis"]) if row["analysis"] else None
     if analysis is None:
+        with db:
+            call_id = db.execute("INSERT INTO ai_calls(key,requested,outcome) VALUES(?,?,'started')", (row["key"], time.time())).lastrowid
         try:
             analysis = analyse(db, cfg, alert)
         except Exception as exc:
             attempts = row["ai_attempts"] + 1
             defer_rate(db, "ai", getattr(exc, "retry_after", 0))
             with db:
+                db.execute("UPDATE ai_calls SET outcome='failed',completed=? WHERE id=?", (time.time(), call_id))
                 db.execute("UPDATE queue SET ai_attempts=?,due=? WHERE key=?", (attempts, time.time() + max(backoff(attempts), getattr(exc, "retry_after", 0)), row["key"]))
             LOG.warning("AI analysis failed; attempt %d", attempts)
             if attempts < cfg["ai_attempts"]:
                 return
             analysis = {"unavailable": True}
+        else:
+            with db:
+                db.execute("UPDATE ai_calls SET outcome='validated',completed=? WHERE id=?", (time.time(), call_id))
         with db:
             db.execute("UPDATE queue SET analysis=? WHERE key=?", (json.dumps(analysis), row["key"]))
     parts = split_message(message(alert, None if analysis.get("unavailable") else analysis))
@@ -266,7 +279,11 @@ def process(db, cfg, row):
                 "link_preview_options": {"is_disabled": True}}, cfg)
             if result.get("ok") is not True:
                 raise RemoteError(result.get("parameters", {}).get("retry_after", 0))
+            message_id = result.get("result", {}).get("message_id")
+            if type(message_id) is not int:
+                raise RemoteError()
             with db:
+                db.execute("INSERT OR REPLACE INTO receipts VALUES(?,?,?,?,?)", (row["key"], index, message_id, str(cfg["chat_id"]), time.time()))
                 db.execute("UPDATE queue SET next_part=?,attempts=0 WHERE key=?", (index + 1, row["key"]))
         with db:
             db.execute("UPDATE queue SET status='sent',completed=? WHERE key=?", (time.time(), row["key"]))
@@ -296,7 +313,10 @@ def worker(db, cfg):
                 time.sleep(1)
             if time.time() - last_cleanup >= 3600:
                 with db:
-                    db.execute("DELETE FROM queue WHERE status IN ('sent','ignored') AND completed<?", (time.time() - cfg["retention_days"] * 86400,))
+                    cutoff = time.time() - cfg["retention_days"] * 86400
+                    for table in ("ai_calls", "receipts"):
+                        db.execute(f"DELETE FROM {table} WHERE key IN (SELECT key FROM queue WHERE status IN ('sent','ignored') AND completed<?)", (cutoff,))
+                    db.execute("DELETE FROM queue WHERE status IN ('sent','ignored') AND completed<?", (cutoff,))
                 last_cleanup = time.time()
 
 

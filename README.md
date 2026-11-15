@@ -95,6 +95,50 @@ with `getChat: HTTP 400 - chat not found` usually requires opening that bot from
 the destination account and pressing Start, or correcting the configured chat ID.
 It does not send any messages or consume updates belonging to another bot client.
 
+## Synthetic real-pipeline workshop
+
+`workshop.py` runs six marked syslog events through a dedicated monitored file,
+custom rules 118500–118505, Wazuh logcollector/analysisd/integratord and the normal
+worker. It refuses occupied rule IDs or existing test files, backs up the manager
+configuration, runs all six cases through `wazuh-logtest`, validates analysisd and
+logcollector, and restarts only the manager before appending events eight seconds
+apart. It never writes to `alerts.json` and never calls the integration producer
+for the main events.
+
+```sh
+sudo python3 wazuh-llm-telegram/workshop.py
+```
+
+The workshop sends four normal synthetic alert notifications and one isolated
+AI-unavailable fallback notification to the configured chat. The duplicate replay
+uses an actual workshop alert but only a separate queue, with no worker/network
+calls. The failure exercise copies the integration, uses its own configuration,
+SQLite database and transient systemd worker, and changes only that copy's
+`OR_URL` to the unreachable HTTPS loopback endpoint `https://127.0.0.1:1/unreachable`.
+It expects three failed AI attempts then a real Telegram fallback delivery.
+
+The queue keeps metadata-only `ai_calls` and `receipts` tables for correlation:
+request attempt/outcome timestamps, queue key, Telegram message ID/part/chat and
+delivery timestamp. No API keys or bot tokens are recorded. A receipt is written
+only after a successful API response containing an integer message ID. Those
+audit rows expire along with successfully completed queue records.
+
+Each run stores evidence and a protected cleanup manifest under
+`/root/wazuh-workshop/<run-id>/`, isolated code under
+`/opt/wazuh-workshop/<run-id>/`, and isolated databases under
+`/var/lib/wazuh-workshop/<run-id>/`. The copied `cleanup.py` can be run as root
+after reviewing evidence. It checks rule hashes and exact localfile markers,
+refuses non-test log lines or symlinks, validates before restarting, and removes
+only that run's test rules/log/localfile/queue/audit rows and isolated directories.
+It keeps reports/backups, indexed alerts, real `alerts.json`, production
+integration/secrets, Telegram messages and Hermes. The workshop does **not** run
+cleanup automatically.
+
+Telegram delivery evidence is API acceptance and returned message IDs; the tool
+does not claim that a person visually inspected Telegram. The injection case also
+compares the reconstructed message to the real secrets inside a transient
+unprivileged process, reporting booleans only. AI recommendations are never executed.
+
 To disable: stop/disable only `wazuh-llm-telegram`, restore the appropriate
 `ossec.conf.llm-backup-*` file, validate with `wazuh-analysisd -t` and
 `wazuh-integratord -t`, then restart the manager. Keep the queue and secrets for

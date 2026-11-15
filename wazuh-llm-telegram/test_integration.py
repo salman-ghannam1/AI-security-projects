@@ -70,7 +70,7 @@ class IntegrationTests(unittest.TestCase):
                 app.validated(data)
 
     @patch.object(app, 'rate')
-    @patch.object(app, 'post', return_value={'ok': True})
+    @patch.object(app, 'post', return_value={'ok': True, 'result': {'message_id': 1}})
     @patch.object(app, 'analyse', side_effect=app.RemoteError())
     @patch.dict(app.os.environ, {'TELEGRAM_BOT_TOKEN': 'synthetic'})
     def test_ai_failure_retries_then_sends_fallback(self, analyse, post, rate):
@@ -89,15 +89,16 @@ class IntegrationTests(unittest.TestCase):
         data = alert()
         data['full_log'] = 'safe log ' * 900
         app.enqueue(self.db, self.cfg, data)
-        with patch.object(app, 'post', side_effect=[{'ok': True}, app.RemoteError(120)]):
+        with patch.object(app, 'post', side_effect=[{'ok': True, 'result': {'message_id': 1}}, app.RemoteError(120)]):
             app.process(self.db, self.cfg, self.row())
         self.assertEqual(self.row()['next_part'], 1)
         self.assertGreaterEqual(self.row()['due'], app.time.time() + 115)
-        with patch.object(app, 'post', return_value={'ok': True}) as post:
+        with patch.object(app, 'post', return_value={'ok': True, 'result': {'message_id': 2}}) as post:
             app.process(self.db, self.cfg, self.row())
             self.assertTrue(post.call_args.args[1]['text'].startswith('[2/'))
         self.assertEqual(analyse.call_count, 1)
         self.assertEqual(self.row()['status'], 'sent')
+        self.assertEqual(self.db.execute('SELECT message_id FROM receipts ORDER BY part').fetchall()[1][0], 2)
 
     @patch.object(app, 'rate')
     @patch.object(app, 'analyse', return_value=ANALYSIS)
@@ -123,6 +124,21 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(updated.count('<name>custom-llm-telegram</name>'), 1)
         self.assertIn('<name>custom-other</name>', updated)
         self.assertIn('<level>12</level>', updated)
+
+    def test_cleanup_selects_only_this_runs_test_rows(self):
+        spec = importlib.util.spec_from_file_location('cleanup', Path(__file__).with_name('cleanup_workshop.py'))
+        cleanup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cleanup)
+        manifest = {'production_queue_keys': ['selected', 'not-a-test']}
+        payloads = [
+            ('selected', {'rule': {'id': '118502'}, 'full_log': 'WORKSHOP TEST — SYNTHETIC EVENT run_id=[REDACTED]'}),
+            ('other-run', {'rule': {'id': '118502'}, 'full_log': 'WORKSHOP TEST — SYNTHETIC EVENT run_id=another-run '}),
+            ('not-a-test', {'rule': {'id': '100001'}, 'full_log': 'A real event'}),
+        ]
+        with self.db:
+            for key, data in payloads:
+                self.db.execute('INSERT INTO queue(key,payload,created) VALUES(?,?,0)', (key, json.dumps(data)))
+        self.assertEqual(cleanup.matching_keys(self.db, manifest, 'this-run'), ['selected'])
 
 
 if __name__ == '__main__':
